@@ -443,11 +443,33 @@ public class HarnessController {
     public ProotBootstrap getProot() { return proot; }
 
     /** 是否已安装 deepseek-harness（跟随自定义工作区路径；RC6 模式检查 dsh 命令） */
+    /** harness 安装状态缓存（进程内）：避免每次都同步 exec proot 判断 */
+    private volatile boolean harnessInstalledCache = false;
+
     public boolean isHarnessInstalled() {
-        if (proot.isHarnessInstalled(getWorkdir())) return true;
+        if (harnessInstalledCache) return true;
+        if (proot.isHarnessInstalled(getWorkdir())) {
+            harnessInstalledCache = true;
+            return true;
+        }
+        // RC6 预装（全局 dsh，无源码树）：纯文件判定。
+        // 这里绝不能先走 exec —— 本方法被启动页 onViewCreated / 按钮点击在主线程调用，
+        // proot 冷启动同步执行会把 UI 卡死几秒到几十秒（首启"点击没反应"的元凶）。
+        try {
+            java.io.File root = proot.getRootfsDir();
+            if (new java.io.File(root, "root/dsh-bin/.version").isFile()
+                    || new java.io.File(root, "usr/local/lib/node_modules/@deepseek-ai/dsh/package.json").isFile()
+                    || new java.io.File(root, "usr/local/bin/dsh").exists()) {
+                harnessInstalledCache = true;
+                return true;
+            }
+        } catch (Throwable ignored) {
+        }
         try {
             String r = proot.execAndRead("command -v dsh 2>/dev/null || echo MISSING");
-            return r != null && !r.startsWith("ERROR") && !r.contains("MISSING") && !r.trim().isEmpty();
+            boolean ok = r != null && !r.startsWith("ERROR") && !r.contains("MISSING") && !r.trim().isEmpty();
+            if (ok) harnessInstalledCache = true;
+            return ok;
         } catch (Exception e) {
             return false;
         }
@@ -499,20 +521,25 @@ public class HarnessController {
     }
 
     public void maybePrewarmWeb() {
-        try {
-            ensureWebUiDegrade(); // 每次启动前置自愈（幂等秒回，防插件失败卡启动）
-        } catch (Throwable ignored) {
-        }
-        try {
-            if (!proot.isInstalled() || !isHarnessInstalled()) return; // 环境/harness 未装
-            if (webProcess != null && webProcess.isAlive()) return;    // 已在运行
-            // 尊重用户：90s 内手动停止过 → 不自动拉起
-            long lastStop = prefs.getLong("last_web_stop", 0);
-            if (System.currentTimeMillis() - lastStop < PREWARM_STOP_GUARD_MS) return;
-            android.util.Log.i("DSHA", "[预启动] 后台预热 Web UI…");
-            startWeb();
-        } catch (Throwable ignored) {
-        }
+        // 整体放后台线程：ensureWebUiDegrade / isHarnessInstalled 可能同步 exec proot，
+        // 调用方（启动页 postDelayed）在主线程，直接跑会把 UI 卡死。
+        // 不用 IO 执行器：startWeb 的任务会长期占住单线程 IO 队列。
+        new Thread(() -> {
+            try {
+                ensureWebUiDegrade(); // 每次启动前置自愈（幂等秒回，防插件失败卡启动）
+            } catch (Throwable ignored) {
+            }
+            try {
+                if (!proot.isInstalled() || !isHarnessInstalled()) return; // 环境/harness 未装
+                if (webProcess != null && webProcess.isAlive()) return;    // 已在运行
+                // 尊重用户：90s 内手动停止过 → 不自动拉起
+                long lastStop = prefs.getLong("last_web_stop", 0);
+                if (System.currentTimeMillis() - lastStop < PREWARM_STOP_GUARD_MS) return;
+                android.util.Log.i("DSHA", "[预启动] 后台预热 Web UI…");
+                startWeb();
+            } catch (Throwable ignored) {
+            }
+        }, "dsha-prewarm").start();
     }
 
     // ================= 分步安装 =================
@@ -1732,7 +1759,9 @@ public class HarnessController {
         prefs.edit().putLong("last_web_stop", System.currentTimeMillis()).apply();
         // 标记"用户主动停止"：keepAlive 暂停自动拉起，直到用户/预启动再次 startWeb
         prefs.edit().putBoolean("keepalive_paused", true).apply();
-        IO.execute(() -> {
+        // 必须用独立线程，不能进单线程 IO 队列：startWeb 的任务在 web 运行期间
+        // 一直阻塞在 drainOutput 占着 IO，排队的 stop 永远轮不到 → 停止/重启形同虚设
+        new Thread(() -> {
             try {
                 Process p = webProcess;
                 if (p != null) {
@@ -1743,7 +1772,7 @@ public class HarnessController {
                 setState("", 0, "已停止后台服务", "", false);
             } catch (Exception ignored) {
             }
-        });
+        }, "dsha-stopweb").start();
     }
 
     public void checkStatus() {
