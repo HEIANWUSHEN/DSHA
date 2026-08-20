@@ -1388,10 +1388,16 @@ public class HarnessController {
         if (lanReady) opts += " --host 0.0.0.0" + lanTrustArgs(); // 0.0.0.0 + 信任本机所有 IP（Host 头校验放行）
         String wd = detectWorkdir();
         return "node /root/dsh-config-fix.js 2>/dev/null || true; "
-                + "if [ -d /root/" + wd + " ]; then cd /root/" + wd + "; " + depsSelfHeal()
+                // 判定源码模式必须认启动入口 bin.js：RC6 模式下工作区目录也存在（只是没有源码），
+                // 只认 -d 会把空工作区误判成源码树 → 启动失败
+                + "if [ -f /root/" + wd + "/apps/cli/lib/bin.js ]; then cd /root/" + wd + "; " + depsSelfHeal()
                 + "exec node apps/cli/lib/bin.js web" + opts + " > ~/dsh-web.log 2>&1; "
-                + "else echo '[DSHA] 源码目录缺失，尝试全局 dsh'; "
+                + "else "
                 + "if command -v dsh >/dev/null 2>&1 && test -f \"$(command -v dsh)\"; then "
+                // RC6 模式没有源码树，但工作区目录必须存在并作为运行目录：
+                // 1) 否则用户在 MT/工作区页看不到 deepseek-harness 文件夹（"下载完没有工作区"）
+                // 2) agent 产物/上传文件有固定落点，备份功能才能带上
+                + "mkdir -p /root/" + wd + " && cd /root/" + wd + " && "
                 + "exec dsh web" + opts + " > ~/dsh-web.log 2>&1; "
                 + "else echo '[DSHA] 全局 dsh 不可用（悬空链接或未安装），请到分步安装页重装 ⑤ deepseek-harness'; exit 1; fi; fi";
     }
@@ -1439,8 +1445,10 @@ public class HarnessController {
                     "export DEEPSEEK_API_KEY='" + effectiveApiKey() + "'\n" +
                     "export DSH_PERMISSION_MODE=" + getPermissionMode() + "\n" +
                     "export DSH_CONFIRM=1\n" +
+                    // 工作区目录先于 cd 创建：RC6 模式没有源码树，不建目录的话
+                    // 看门狗重启第一步 cd || exit 1 必失败 → 自动重启形同虚设
+                    "mkdir -p /root/" + getWorkdir() + " /root/.codex/pets /root/.dsh/plugins 2>/dev/null\n" +
                     "cd /root/" + getWorkdir() + " || exit 1\n" +
-                    "mkdir -p /root/.codex/pets /root/.dsh/plugins 2>/dev/null\n" +
                     restartCmd + "\n";
             String watchdog =
                     "#!/bin/bash\n" +
@@ -1502,6 +1510,10 @@ public class HarnessController {
                     "if [ -z \"$DST\" ]; then echo '[DSHA] 未找到 web-app client 目录，跳过移动端适配'; exit 0; fi; " +
                     "echo \"[DSHA] 注入移动端适配 -> $DST\"; " +
                     "cp -f /root/dsha-mobile-adapt/client.js \"$DST/dsh-client-ui-mobile-adapt.js\" && " +
+                    // 同步复制成 profile node_modules 里的正规插件包：
+                    // 已装插件页可见、开关可用（否则只有注入产物，插件列表里看不到它）
+                    "mkdir -p /root/.dsh/profiles/web/node_modules/dsh-client-ui-mobile-adapt && " +
+                    "cp -f /root/dsha-mobile-adapt/* /root/.dsh/profiles/web/node_modules/dsh-client-ui-mobile-adapt/ && " +
                     "touch /root/dsha-mobile-adapt-installed && echo OK";
             java.io.File sF = new java.io.File(proot.getRootfsDir(), "root/dsha-mobile-inject.sh");
             java.io.File aDir = new java.io.File(proot.getRootfsDir(), "root/dsha-mobile-adapt");
@@ -1510,6 +1522,7 @@ public class HarnessController {
             writeAssetTo("mobile-adapt/client.js", new java.io.File(aDir, "client.js"));
             writeAssetTo("mobile-adapt/index.js", new java.io.File(aDir, "index.js"));
             writeAssetTo("mobile-adapt/cordis.patch.yml", new java.io.File(aDir, "cordis.patch.yml"));
+            writeAssetTo("mobile-adapt/package.json", new java.io.File(aDir, "package.json"));
             java.nio.file.Files.write(sF.toPath(), script.getBytes(StandardCharsets.UTF_8));
             // 3) 执行注入（幂等标记存在则跳过）
             String r = proot.execAndRead(
@@ -1742,6 +1755,9 @@ public class HarnessController {
                 proot.ensureRuntimeFiles();
                 ensureDangerGuard(); // 安全包装器缺失则自动补装
                 ensureBashGuardPatch(); // bash 工具 lib 强制加载守卫（不依赖重装）
+                // 移动端 UI 适配插件：全内置 APK 不走分步安装，第⑥步的注入不会执行，
+                // 必须在启动路径补一次（幂等，有标记文件秒跳过）
+                ensureNativeMobileAdapt();
                 Process p = proot.execRootfs(startWebCommand());
                 webProcesses.add(p);
                 synchronized (webStartLock) {

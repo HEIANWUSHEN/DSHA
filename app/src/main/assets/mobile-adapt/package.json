@@ -1,0 +1,10 @@
+{
+  "name": "dsh-client-ui-mobile-adapt",
+  "version": "1.0.0",
+  "description": "DSHA 内置移动端 UI 适配（单栏/抽屉/汉堡菜单，浏览器端注入）",
+  "main": "index.js",
+  "type": "module",
+  "dsh": {
+    "client": "./client.js"
+  }
+}
