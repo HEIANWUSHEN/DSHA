@@ -940,12 +940,26 @@ public class HarnessController {
         requireTools();
         setProgress("安装 deepseek-harness 最新 RC（npm 全局）", 91);
         runStep("RC6 安装环境准备", 92,
+                // 先写 registry 再追加 allow-scripts：顺序反了会把前者 printf 覆盖掉
+                "printf 'registry=https://registry.npmmirror.com\\n' > /root/.npmrc; " +
                 "npm config set allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs --location=user 2>/dev/null; " +
-                "printf 'registry=https://registry.npmmirror.com\\n' > /root/.npmrc");
+                "echo '--- /root/.npmrc ---'; cat /root/.npmrc");
         runStep("安装 @deepseek-ai/dsh 最新 RC", 95,
+                // 上游 dist-tags 会变（曾有 rc，现在只有 latest/next），单一 tag 会整步坏死：
+                // @rc → @latest（npmmirror）→ @latest（官方 registry）三级回退。
+                // 用 PIPESTATUS 判 npm 真实退出码——不能用 command -v dsh 判成败，
+                // 预装环境里旧版 dsh 一直在，会把安装失败误报成成功
+                "ok=0; " +
                 "npm install -g @deepseek-ai/dsh@rc --force --registry=https://registry.npmmirror.com 2>&1 | tail -25; " +
-                "echo \">> npm 退出码: ${PIPESTATUS[0]}\"; " +
-                "if [ \"${PIPESTATUS[0]}\" != 0 ]; then echo 'npm 安装失败，请重试或检查网络'; fi");
+                "[ \"${PIPESTATUS[0]}\" = 0 ] && ok=1; " +
+                "if [ $ok = 0 ]; then echo '>> @rc 标签安装失败（上游可能已移除该 tag），改装 @latest…'; " +
+                "npm install -g @deepseek-ai/dsh@latest --force --registry=https://registry.npmmirror.com 2>&1 | tail -25; " +
+                "[ \"${PIPESTATUS[0]}\" = 0 ] && ok=1; fi; " +
+                "if [ $ok = 0 ]; then echo '>> npmmirror 失败（镜像可能未同步），改官方 registry…'; " +
+                "npm install -g @deepseek-ai/dsh@latest --force --registry=https://registry.npmjs.org 2>&1 | tail -25; " +
+                "[ \"${PIPESTATUS[0]}\" = 0 ] && ok=1; fi; " +
+                "if [ $ok = 1 ]; then command -v dsh && echo '>> dsh 安装成功'; " +
+                "else echo '>> 三个来源全部失败，请检查网络后重试'; exit 1; fi");
         runStep("编译 node-pty 原生模块", 98,
                 "node-gyp --version >/dev/null 2>&1 || npm install -g node-gyp --registry=https://registry.npmmirror.com 2>&1 | tail -2; " +
                 "npty_dir=$(find /usr/local/lib/node_modules -maxdepth 6 -path '*/node-pty' -type d 2>/dev/null | head -1); " +
@@ -1009,12 +1023,12 @@ public class HarnessController {
                 "git clone --depth 1 https://ghproxy.net/https://github.com/deepseek-ai/deepseek-harness.git " + wd + " || " +
                 "git clone --depth 1 https://gitcode.com/gh_mirrors/de/deepseek-harness.git " + wd + " ) || " +
                 "(echo 'git 克隆失败，改用源码包下载…'; rm -rf " + wd + " && " +
-                "(curl -kfsSL --retry 3 -m 300 " + gitHubProxy("https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/refs/heads/main") + " -o dsh-src.tar.gz || " +
-                "curl -kfsSL --retry 3 -m 300 https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/refs/heads/main -o dsh-src.tar.gz || " +
-                "curl -kfsSL --retry 3 -m 300 https://ghfast.top/https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/refs/heads/main -o dsh-src.tar.gz || " +
-                "curl -kfsSL --retry 3 -m 300 https://gh-proxy.com/https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/refs/heads/main -o dsh-src.tar.gz || " +
-                "curl -kfsSL --retry 3 -m 300 https://ghproxy.net/https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/refs/heads/main -o dsh-src.tar.gz) && " +
-                "tar -xzf dsh-src.tar.gz && mv deepseek-harness-main " + wd + " && rm -f dsh-src.tar.gz); fi");
+                "(curl -kfsSL --retry 3 -m 300 " + gitHubProxy("https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/refs/heads/master") + " -o dsh-src.tar.gz || " +
+                "curl -kfsSL --retry 3 -m 300 https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/refs/heads/master -o dsh-src.tar.gz || " +
+                "curl -kfsSL --retry 3 -m 300 https://ghfast.top/https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/refs/heads/master -o dsh-src.tar.gz || " +
+                "curl -kfsSL --retry 3 -m 300 https://gh-proxy.com/https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/refs/heads/master -o dsh-src.tar.gz || " +
+                "curl -kfsSL --retry 3 -m 300 https://ghproxy.net/https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/refs/heads/master -o dsh-src.tar.gz) && " +
+                "tar -xzf dsh-src.tar.gz && (mv deepseek-harness-master " + wd + " 2>/dev/null || mv deepseek-harness-main " + wd + ") && rm -f dsh-src.tar.gz); fi");
 
         // 应用 WebUI 移动端补丁（移除“打开/收起侧边栏”按钮）；失败不阻塞安装
         try {
