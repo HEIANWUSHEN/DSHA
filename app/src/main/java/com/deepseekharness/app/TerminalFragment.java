@@ -96,13 +96,15 @@ public class TerminalFragment extends Fragment {
     }
 
     private void startShell() {
-        c.ensureDangerGuard(); // 危险确认包装器缺失则自动补装（装新 APK 后无需重装第 4 步）
         Process p = shell;
         if (p != null && p.isAlive() && readerThread != null && readerThread.isAlive()) {
             return; // 会话已在后台跑，本页只是重新绑定输出视图
         }
         new Thread(() -> {
             try {
+                // 危险确认包装器缺失则自动补装（装新 APK 后无需重装第 4 步）。
+                // 内部会同步 exec proot，必须在后台线程跑，放主线程会卡死终端页 UI
+                c.ensureDangerGuard();
                 shell = c.getProot().execRootfsInteractive();
                 running = true;
                 byte[] buf = new byte[8192];

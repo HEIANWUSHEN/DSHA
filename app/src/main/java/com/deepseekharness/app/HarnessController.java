@@ -1711,7 +1711,9 @@ public class HarnessController {
             if (webStarting) return; // 已有启动在进行（防 keepAlive/手动并发起第二个实例 → EADDRINUSE）
             webStarting = true;
         }
-        IO.execute(() -> {
+        // 用独立线程而不是单线程 IO 队列：本任务的 drainOutput 会阻塞到 web 退出，
+        // 若占着 IO，排队其后的 install/installStep/checkStatus 在 web 运行期间全部失效
+        new Thread(() -> {
             try {
                 // 启动前预检：端口仍被占 → 深杀残留（根治 EADDRINUSE）
                 if (isWebPortUp(400)) {
@@ -1751,7 +1753,7 @@ public class HarnessController {
             } catch (Throwable e) {
                 setState("", 0, "", errMsg("启动出错：", e), false);
             }
-        });
+        }, "dsha-webrun").start();
     }
 
     public void stopWeb() {

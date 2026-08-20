@@ -90,23 +90,31 @@ public class WorkspaceFragment extends Fragment {
 
         backupBtn.setOnClickListener(v -> {
             Toast.makeText(requireContext(), "正在备份，请稍候…", Toast.LENGTH_SHORT).show();
+            // 提前捕获 context/activity：后台线程与回调里不能再 requireContext()
+            // （备份耗时数十秒，期间用户切页 fragment detach 会直接闪退）
+            final Context appCtx = requireContext().getApplicationContext();
             new Thread(() -> {
-                String path = BackupManager.backupToExternal(requireContext(), c);
-                if (getActivity() == null) return;
-                getActivity().runOnUiThread(() -> {
+                String path = BackupManager.backupToExternal(appCtx, c);
+                final android.app.Activity act = getActivity();
+                if (act == null) return;
+                act.runOnUiThread(() -> {
                     if (path == null) {
-                        Toast.makeText(requireContext(), "备份失败：环境可能未安装", Toast.LENGTH_LONG).show();
+                        Toast.makeText(appCtx, "备份失败：环境可能未安装", Toast.LENGTH_LONG).show();
                         return;
                     }
-                    new AlertDialog.Builder(requireContext())
+                    if (!isAdded()) {
+                        Toast.makeText(appCtx, "备份完成：" + path, Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    new AlertDialog.Builder(act)
                             .setTitle("备份完成")
                             .setMessage("已导出到：\n" + path)
                             .setPositiveButton("复制路径", (d, w) -> {
-                                ClipboardManager cm = (ClipboardManager) requireContext()
+                                ClipboardManager cm = (ClipboardManager) appCtx
                                         .getSystemService(Context.CLIPBOARD_SERVICE);
                                 if (cm != null) {
                                     cm.setPrimaryClip(ClipData.newPlainText("backup", path));
-                                    Toast.makeText(requireContext(), "路径已复制", Toast.LENGTH_SHORT).show();
+                                    Toast.makeText(appCtx, "路径已复制", Toast.LENGTH_SHORT).show();
                                 }
                             })
                             .setNegativeButton("好", null)
@@ -140,11 +148,13 @@ public class WorkspaceFragment extends Fragment {
 
     private void doRestore(Uri uri) {
         Toast.makeText(requireContext(), "正在恢复，请稍候…", Toast.LENGTH_SHORT).show();
+        // 提前捕获 applicationContext：后台线程里不能再 requireContext()（detach 后闪退）
+        final Context appCtx = requireContext().getApplicationContext();
         new Thread(() -> {
             try {
                 File tmp = new File(c.getProot().getRootfsDir(), "root/.dsha-restore.tar.gz");
                 if (tmp.getParentFile() != null) tmp.getParentFile().mkdirs();
-                try (InputStream in = requireContext().getContentResolver().openInputStream(uri);
+                try (InputStream in = appCtx.getContentResolver().openInputStream(uri);
                      FileOutputStream out = new FileOutputStream(tmp)) {
                     byte[] buf = new byte[8192];
                     int n;
@@ -167,13 +177,15 @@ public class WorkspaceFragment extends Fragment {
                         }
                     }
                 }
-                if (getActivity() == null) return;
-                getActivity().runOnUiThread(() ->
-                        Toast.makeText(requireContext(), "恢复完成（API key 已同步）",
+                final android.app.Activity act1 = getActivity();
+                if (act1 == null) return;
+                act1.runOnUiThread(() ->
+                        Toast.makeText(act1.getApplicationContext(), "恢复完成（API key 已同步）",
                                 Toast.LENGTH_LONG).show());
             } catch (Exception e) {
-                if (getActivity() != null) {
-                    getActivity().runOnUiThread(() -> Toast.makeText(requireContext(),
+                final android.app.Activity act2 = getActivity();
+                if (act2 != null) {
+                    act2.runOnUiThread(() -> Toast.makeText(act2.getApplicationContext(),
                             "恢复失败：" + e.getMessage(), Toast.LENGTH_LONG).show());
                 }
             }
